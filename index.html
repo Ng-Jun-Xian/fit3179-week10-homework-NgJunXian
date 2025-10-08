@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Global Map + Consumption Per Capita Over Time</title>
+  <title>GDP Per Capita Map + Coffee Consumption Over Time</title>
 
   <!-- Vega / V      latestYearForMap = d3.max(lineSeries, d=>d.Year);
       const latestCol = consYearCols.find(d=>d.year===latestYearForMap)?.col;
@@ -38,8 +38,8 @@
 <body>
   <div class="container">
     <header>
-      <h1>Global Consumption per Capita</h1>
-      <p>Map idiom retained. Line chart shows the <em>global average consumption per capita</em> over time using <code>gdp_cleaned.csv</code>.</p>
+      <h1>Global Economic & Coffee Consumption Data</h1>
+      <p>Map shows GDP per capita by country (2019). Line chart shows the <em>global average coffee consumption per capita</em> over time.</p>
     </header>
 
     <!-- Map -->
@@ -304,17 +304,17 @@
       updateLineChart(e.target.value);
     });
 
-    // ---------- MAP SPEC (keep idiom; fill by latest year’s consumption per capita) ----------
+        // ---------- MAP SPEC (show GDP per capita instead of consumption) ----------
     document.getElementById('map-caption').textContent =
-      `Map shaded by consumption per capita for the latest available year (${latestYearForMap}). Grey = no data.`;
+      `Map shaded by GDP per capita for 2019. Grey = no data available.`;
 
     const mapSpec = {
       $schema: "https://vega.github.io/schema/vega-lite/v5.json",
       width: 900,
       height: 520,
       title: {
-        text: "Consumption per Capita by Country",
-        subtitle: `Latest year available: ${latestYearForMap} - grey: no data`,
+        text: "GDP Per Capita by Country",
+        subtitle: "Gross Domestic Product per capita in current USD (2019) - Grey countries: No publicly available GDP data",
         fontSize: 16,
         anchor: "start",
         color: "#333"
@@ -333,25 +333,27 @@
             {
               lookup: "properties.NAME",
               from: {
-                data: { values: mapValues },  // <- values computed from CSV
-                key: "Country",
-                fields: ["Value"]
+                data: { url: "gdp_cleaned.csv" },
+                key: "Country Name",
+                fields: ["2019"]
               }
             },
-            { filter: "datum['Value'] != null" }
+            { filter: "datum['2019'] != null" }
           ],
           mark: { type: "geoshape", stroke: "white", strokeWidth: 0.5 },
           encoding: {
             color: {
-              field: "Value",
+              field: "2019",
               type: "quantitative",
-              scale: { scheme: "orangered" },
-              legend: { title: `Consumption per capita (${latestYearForMap})` }
+              scale: {
+                scheme: "orangered",
+                type: "log"
+              },
+              legend: { title: "GDP per capita (USD)" }
             },
             tooltip: [
               { field: "properties.NAME", type: "nominal", title: "Country" },
-              { field: "Value", type: "quantitative", title: "Coffee consumption (kg/person)", format: ".3f" },
-              { value: "Click country to view in line chart", title: "Tip" }
+              { field: "2019", type: "quantitative", title: "GDP per capita (USD)", format: "$,.0f" }
             ]
           }
         }
