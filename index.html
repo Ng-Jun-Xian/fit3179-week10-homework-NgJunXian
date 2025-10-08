@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Global Map + Consumption Per Capita Over Time</title>
+
+  <!-- Vega / V      latestYearForMap = d3.max(lineSeries, d=>d.Year);
+      const latestCol = consYearCols.find(d=>d.year===latestYearForMap)?.col;
+      const countryGuess = countryCol || findColumn(columns, ['Country', 'Country Name', 'name']);
+      if (!countryGuess) throw new Error("Couldn't infer the country name column.");
+      mapValues = rows
+        .map(r => ({Country: r[countryGuess], Value: +r[latestCol]}))
+        .filter(d => d.Country && !Number.isNaN(d.Value) && d.Value > 0);e / Embed -->
+  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+
+  <!-- d3 for lightweight wrangling -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+
+  <style>
+    :root { --bg:#fafafa; --card:#fff; --text:#222; --muted:#666; }
+    *{box-sizing:border-box}
+    body{
+      margin:0; padding:24px;
+      font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:var(--bg); color:var(--text);
+      display:flex; flex-direction:column; align-items:center;
+    }
+    .container{ width:100%; max-width:1100px; display:grid; gap:20px; }
+    header h1{ margin:0 0 6px; font-size:28px; font-weight:700; }
+    header p{ margin:0; color:var(--muted) }
+    .card{ background:var(--card); border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,.08); padding:18px; }
+    .vis{ width:100%; }
+    .caption{ margin-top:8px; font-size:13px; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Global Consumption per Capita</h1>
+      <p>Map idiom retained. Line chart shows the <em>global average consumption per capita</em> over time using <code>gdp_cleaned.csv</code>.</p>
+    </header>
+
+    <!-- Map -->
+    <section class="card">
+      <div id="vis-map" class="vis"></div>
+      <div id="map-caption" class="caption"></div>
+    </section>
+
+    <!-- Line -->
+    <section class="card">
+      <div style="margin-bottom: 15px;">
+        <label for="country-select" style="font-weight: 600; margin-right: 10px;">View:</label>
+        <select id="country-select" style="padding: 8px; border-radius: 4px; border: 1px solid #ccc;">
+          <option value="Overall">Overall Average</option>
+        </select>
+      </div>
+      <div id="vis-line" class="vis"></div>
+      <div class="caption">
+        Interactive line chart showing coffee consumption trends. Select "Overall Average" or individual countries from the dropdown menu.
+      </div>
+    </section>
+  </div>
+
+  <script>
+  // ---------- Helpers ----------
+  function findColumn(columns, candidates) {
+    const norm = s => s.toLowerCase().replace(/[\s_/()-]+/g, ' ').trim();
+    const colsNorm = columns.map(c => ({raw:c, norm:norm(c)}));
+    for (const cand of candidates) {
+      const cNorm = norm(cand);
+      const hit = colsNorm.find(col => col.norm === cNorm);
+      if (hit) return hit.raw;
+    }
+    // fallback: contains match
+    for (const cand of candidates) {
+      const cNorm = norm(cand);
+      const hit = colsNorm.find(col => col.norm.includes(cNorm));
+      if (hit) return hit.raw;
+    }
+    return null;
+  }
+
+  function detectConsumptionYearColumns(columns) {
+    // Look specifically for Coffee_PerCapita_YYYY columns
+    const out = []; // {year, col}
+    const re = /Coffee_PerCapita_(\d{4})/i;
+    for (const c of columns) {
+      const m = c.match(re);
+      if (m) {
+        const year = +m[1];
+        if (year >= 1900 && year <= 2100) out.push({year, col:c});
+      }
+    }
+    // Sort by year
+    out.sort((a,b)=>a.year-b.year);
+    return out;
+  }
+
+  (async () => {
+    const topoUrl = 'ne_10m_admin_0_countries.json';
+
+    const csvText = await fetch('gdp_cleaned.csv').then(r=>r.text());
+    const rows = d3.csvParse(csvText);
+    const columns = rows.columns;
+
+    // Try tidy/long first: Country + Year + Consumption column
+    const countryCol = findColumn(columns, ['Country', 'Country Name', 'country_name', 'name']);
+    const yearCol    = findColumn(columns, ['Year']);
+    const consCol    = findColumn(columns, [
+      'Consumption per capita','consumption per capita','consumption_per_capita',
+      'coffee consumption per capita','coffee_consumption_per_capita',
+      'consumption pc','cons_pc','coffee pc','coffee_pc'
+    ]);
+
+    let lineSeries = [];            // [{Year, Avg}] for overall
+    let countryLineSeries = [];     // [{Country, Year, Value}] for individual countries  
+    let mapValues = [];             // [{Country, Value}]
+    let latestYearForMap = null;    // number
+    let availableCountries = [];    // List of countries with data
+
+    if (yearCol && consCol && countryCol) {
+      // TIDY/LONG SHAPE
+      // Build global average per year
+      const byYear = d3.rollup(
+        rows.filter(r => r[consCol] !== null && r[consCol] !== '' && !isNaN(+r[consCol])),
+        v => d3.mean(v, d => +d[consCol]),
+        r => +r[yearCol]
+      );
+      lineSeries = Array.from(byYear, ([Year, Avg]) => ({Year, Avg}))
+                        .filter(d=>!isNaN(d.Year) && d.Avg!=null)
+                        .sort((a,b)=>a.Year-b.Year);
+
+      // Map: use latest available year
+      latestYearForMap = d3.max(lineSeries, d=>d.Year);
+      const rowsLatest = rows.filter(r => +r[yearCol] === latestYearForMap && r[consCol] != null && r[consCol] !== '' && !isNaN(+r[consCol]));
+      // If duplicates per country, average them
+      const byCountry = d3.rollup(rowsLatest, v=>d3.mean(v, d=>+d[consCol]), r=>r[countryCol]);
+      mapValues = Array.from(byCountry, ([Country, Value]) => ({Country, Value}));
+
+    } else {
+      // WIDE SHAPE (headers carry years)
+      // Detect consumption-per-capita year columns
+      const consYearCols = detectConsumptionYearColumns(columns);
+      if (consYearCols.length === 0) {
+        throw new Error("Couldn't find consumption-per-capita year columns. Please ensure headers include e.g. 'Consumption per capita 2015' or provide tidy columns Year + Consumption per capita.");
+      }
+
+      const countryGuess = countryCol || findColumn(columns, ['Country', 'Country Name', 'name']);
+      if (!countryGuess) throw new Error("Couldn't infer the country name column.");
+
+      // Build global average per detected year
+      for (const {year, col} of consYearCols) {
+        let sum=0, n=0;
+        for (const r of rows) {
+          const v = +r[col];
+          if (!Number.isNaN(v) && v > 0) { sum += v; n++; }
+        }
+        if (n>0) lineSeries.push({Year: year, Avg: sum/n});
+      }
+      lineSeries.sort((a,b)=>a.Year-b.Year);
+
+      // Build country-specific data for line chart
+      for (const r of rows) {
+        const country = r[countryGuess];
+        if (!country) continue;
+        
+        let hasData = false;
+        for (const {year, col} of consYearCols) {
+          const value = +r[col];
+          if (!Number.isNaN(value) && value > 0) {
+            countryLineSeries.push({Country: country, Year: year, Value: value});
+            hasData = true;
+          }
+        }
+        if (hasData && !availableCountries.includes(country)) {
+          availableCountries.push(country);
+        }
+      }
+      availableCountries.sort();
+
+      latestYearForMap = d3.max(lineSeries, d=>d.Year);
+      const latestCol = consYearCols.find(d=>d.year===latestYearForMap)?.col;
+      mapValues = rows
+        .map(r => ({Country: r[countryGuess], Value: +r[latestCol]}))
+        .filter(d => d.Country && !Number.isNaN(d.Value) && d.Value > 0);
+    }
+
+    // Populate dropdown with countries
+    const select = document.getElementById('country-select');
+    availableCountries.forEach(country => {
+      const option = document.createElement('option');
+      option.value = country;
+      option.textContent = country;
+      select.appendChild(option);
+    });
+
+    // ---------- INTERACTIVE LINE CHART FUNCTION ----------
+    function updateLineChart(selectedCountry) {
+      let chartData, yField, titleText, subtitleText;
+      
+      if (selectedCountry === 'Overall') {
+        chartData = lineSeries;
+        yField = 'Avg';
+        titleText = 'Global Average Coffee Consumption per Capita Over Time';
+        subtitleText = 'Mean coffee consumption across all countries for each year';
+      } else {
+        chartData = countryLineSeries.filter(d => d.Country === selectedCountry);
+        yField = 'Value';
+        titleText = `Coffee Consumption per Capita: ${selectedCountry}`;
+        subtitleText = `Individual country trend from 2015-2019`;
+      }
+
+      const lineSpec = {
+        $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+        width: 900,
+        height: 320,
+        data: { values: chartData },
+        title: {
+          text: titleText,
+          subtitle: subtitleText,
+          anchor: "start", fontSize: 16, color: "#333"
+        },
+        layer: [
+          {
+            mark: { type: "line", point: true, color: "#e74c3c", strokeWidth: 3 },
+            encoding: {
+              x: { 
+                field: "Year", 
+                type: "quantitative", 
+                axis: { format: "d", title: "Year" }, 
+                scale: { domain: [2014.5, 2019.5] } 
+              },
+              y: { 
+                field: yField, 
+                type: "quantitative", 
+                axis: { title: "Coffee consumption per capita (kg)" }, 
+                scale: { zero: false } 
+              },
+              tooltip: [
+                { field: "Year", type: "quantitative", title: "Year", format: "d" },
+                { field: yField, type: "quantitative", title: "Coffee consumption (kg)", format: ".3f" }
+              ]
+            }
+          },
+          {
+            // Annotation for highest point
+            mark: { 
+              type: "text", 
+              align: "left", 
+              baseline: "bottom", 
+              dx: 5, 
+              dy: -5, 
+              fontSize: 11,
+              fontWeight: "bold",
+              color: "#2c3e50"
+            },
+            encoding: {
+              x: { field: "Year", type: "quantitative" },
+              y: { field: yField, type: "quantitative" },
+              text: { 
+                condition: {
+                  test: `datum.${yField} == ${selectedCountry === 'Overall' ? 
+                    `${Math.max(...chartData.map(d => d[yField]))}` : 
+                    `${Math.max(...chartData.map(d => d.Value || d.Avg))}`}`,
+                  value: "Peak"
+                }
+              }
+            }
+          },
+          {
+            // Trend annotation
+            mark: {
+              type: "text",
+              align: "center",
+              baseline: "top",
+              dx: 0,
+              dy: 10,
+              fontSize: 12,
+              fontStyle: "italic",
+              color: "#7f8c8d"
+            },
+            encoding: {
+              x: { value: 450 }, // Center of chart
+              y: { value: 300 }, // Bottom of chart
+              text: { 
+                value: chartData.length >= 2 && chartData[chartData.length-1][yField] > chartData[0][yField] ? 
+                  "^ Increasing trend" : "v Decreasing trend"
+              }
+            }
+          }
+        ]
+      };
+      
+      vegaEmbed('#vis-line', lineSpec, { actions: false });
+    }
+
+    // Initialize with overall view
+    updateLineChart('Overall');
+
+    // Add dropdown change handler
+    select.addEventListener('change', (e) => {
+      updateLineChart(e.target.value);
+    });
+
+    // ---------- MAP SPEC (keep idiom; fill by latest year’s consumption per capita) ----------
+    document.getElementById('map-caption').textContent =
+      `Map shaded by consumption per capita for the latest available year (${latestYearForMap}). Grey = no data.`;
+
+    const mapSpec = {
+      $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+      width: 900,
+      height: 520,
+      title: {
+        text: "Consumption per Capita by Country",
+        subtitle: `Latest year available: ${latestYearForMap} - grey: no data`,
+        fontSize: 16,
+        anchor: "start",
+        color: "#333"
+      },
+      projection: { type: "equalEarth" },
+      layer: [
+        { data: { sphere: true }, mark: { type: "geoshape", fill: "lightblue", stroke: "steelblue", strokeWidth: 1 } },
+        { data: { graticule: { step: [30,30] } }, mark: { type:"geoshape", fill:null, stroke:"#666", strokeWidth:0.5, strokeOpacity:0.5 } },
+        {
+          data: { url: topoUrl, format: { type: "topojson", feature: "world_countries" } },
+          mark: { type: "geoshape", fill: "#ddd", stroke: "white", strokeWidth: 0.5 }
+        },
+        {
+          data: { url: topoUrl, format: { type: "topojson", feature: "world_countries" } },
+          transform: [
+            {
+              lookup: "properties.NAME",
+              from: {
+                data: { values: mapValues },  // <- values computed from CSV
+                key: "Country",
+                fields: ["Value"]
+              }
+            },
+            { filter: "datum['Value'] != null" }
+          ],
+          mark: { type: "geoshape", stroke: "white", strokeWidth: 0.5 },
+          encoding: {
+            color: {
+              field: "Value",
+              type: "quantitative",
+              scale: { scheme: "orangered" },
+              legend: { title: `Consumption per capita (${latestYearForMap})` }
+            },
+            tooltip: [
+              { field: "properties.NAME", type: "nominal", title: "Country" },
+              { field: "Value", type: "quantitative", title: "Coffee consumption (kg/person)", format: ".3f" },
+              { value: "Click country to view in line chart", title: "Tip" }
+            ]
+          }
+        }
+      ]
+    };
+    vegaEmbed('#vis-map', mapSpec, { actions:false }).then(result => {
+      // Add click handler to map
+      result.view.addEventListener('click', (event, item) => {
+        if (item && item.datum && item.datum.properties) {
+          const countryName = item.datum.properties.NAME;
+          if (availableCountries.includes(countryName)) {
+            select.value = countryName;
+            updateLineChart(countryName);
+          }
+        }
+      });
+    });
+
+  })().catch(err => {
+    console.error(err);
+    const el = document.createElement('pre');
+    el.textContent = 'Error building visuals: ' + err.message;
+    document.body.appendChild(el);
+  });
+  </script>
+</body>
+</html>
